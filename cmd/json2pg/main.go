@@ -79,9 +79,10 @@ func main() {
 				valuePlaceholders += ","
 			}
 			valuePlaceholders += "$" + strconv.Itoa(i)
-			fields = append(fields, k)
+			fields = append(fields, fmt.Sprintf("\"%s\"", k))
 
-			if reflect.TypeOf(v).Kind() == reflect.Map {
+			fmt.Println(v)
+			if reflect.TypeOf(v) != nil && reflect.TypeOf(v).Kind() == reflect.Map {
 				b := bytes.NewBuffer(nil)
 				err = json.NewEncoder(b).Encode(v)
 				if err != nil {
