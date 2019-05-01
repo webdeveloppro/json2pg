@@ -10,8 +10,10 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx"
+	"github.com/pkg/errors"
 )
 
 var (
@@ -66,6 +68,12 @@ func main() {
 	if len(inputData) == 0 {
 		log.Fatal("No rows in the input file")
 	}
+
+	cols, err := columns(pg, *databaseName, *tableName)
+	if err != nil {
+		log.Fatalf("Failed to read table structure: %v", err)
+	}
+
 	errors := make([]error, 0)
 	var totalInserted int64
 	for rowID, row := range inputData {
@@ -74,25 +82,34 @@ func main() {
 		vals := make([]interface{}, 0, len(row))
 		var i int
 		for k, v := range row {
+			if _, ok := cols[k]; !ok {
+				continue
+			}
 			i++
 			if i > 1 {
 				valuePlaceholders += ","
 			}
 			valuePlaceholders += "$" + strconv.Itoa(i)
-			fields = append(fields, fmt.Sprintf("\"%s\"", k))
+			fields = append(fields, `"`+k+`"`)
 
-			fmt.Println(v)
-			if reflect.TypeOf(v) != nil && reflect.TypeOf(v).Kind() == reflect.Map {
-				b := bytes.NewBuffer(nil)
-				err = json.NewEncoder(b).Encode(v)
-				if err != nil {
-					e := fmt.Errorf("Failed to encode json field %s: %v\n", k, err)
-					if !*ignoreErrors {
-						log.Fatal(e.Error())
+			if v != nil {
+				switch {
+				// handle number -> timestamp
+				case reflect.TypeOf(v).Kind() == reflect.Float64 && strings.Contains(cols[k], "timestamp"):
+					v = time.Unix(int64(v.(float64)), 0)
+				// handle json/jsonb
+				case reflect.TypeOf(v).Kind() == reflect.Map:
+					b := bytes.NewBuffer(nil)
+					err = json.NewEncoder(b).Encode(v)
+					if err != nil {
+						e := fmt.Errorf("Failed to encode json field %s: %v\n", k, err)
+						if !*ignoreErrors {
+							log.Fatal(e.Error())
+						}
+						errors = append(errors, e)
 					}
-					errors = append(errors, e)
+					v = b.String()
 				}
-				v = b.String()
 			}
 			vals = append(vals, v)
 		}
@@ -115,4 +132,27 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+func columns(pg *pgx.Conn, dbName, tableName string) (map[string]string, error) {
+	rows, err := pg.Query(
+		`SELECT column_name, data_type
+		FROM information_schema.columns
+		WHERE table_name = $1 AND table_catalog=$2`,
+		tableName, dbName,
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "query failed")
+	}
+	defer rows.Close()
+	cols := make(map[string]string)
+	for rows.Next() {
+		var n, t string
+		err = rows.Scan(&n, &t)
+		if err != nil {
+			return nil, errors.Wrap(err, "scan failed")
+		}
+		cols[n] = t
+	}
+	return cols, nil
 }
